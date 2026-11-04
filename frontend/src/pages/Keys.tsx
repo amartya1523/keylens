@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Area, AreaChart, CartesianGrid, Legend, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, del, patch, post } from "../api";
-import { Card, COLORS, Empty, HeadroomBar } from "../components/ui";
-import { REGION, ago, clock, compact, num, usd } from "../format";
+import { Card, COLORS, Empty, HeadroomBar, Info } from "../components/ui";
+import { ago, clock, compact, num, usd } from "../format";
 
 const PREFIXES: [RegExp, string][] = [
   [/^gsk_/, "Groq"], [/^xai-/, "xAI (Grok)"], [/^sk-or-/, "OpenRouter"], [/^sk-ant-/, "Anthropic"],
@@ -153,7 +153,7 @@ function KeyCard({ k, open, toggle, reload }: { k: any; open: boolean; toggle: (
               </div>
             </div>
             <div>
-              <h3>Ghost usage: provider counter vs KeyLens traffic (24h)</h3>
+              <h3>Ghost usage: provider counter vs KeyLens traffic (24h) <Info text="The provider's daily request bucket refills continuously (limit / 86,400 per second). KeyLens simulates the same bucket with only the requests it proxied. If the provider's bucket is emptier, the difference was used somewhere else." /></h3>
               {!ghost || !Object.keys(ghost).length ? (
                 <p className="sub">Needs rate-limit headers. Send traffic through an app or press “Probe limits”.</p>
               ) : (
@@ -180,11 +180,6 @@ function KeyCard({ k, open, toggle, reload }: { k: any; open: boolean; toggle: (
                     {g.note && <p className="sub" style={{ fontSize: 12 }}>{g.note}</p>}
                   </div>
                 ))
-              )}
-              {k.provider === "groq" && (
-                <p className="sub" style={{ fontSize: 12 }}>
-                  Regions seen: {Object.entries(REGION).slice(0, 2).map(([c, n]) => `${c} = ${n}`).join(", ")} (from the x-groq-region header).
-                </p>
               )}
             </div>
           </div>

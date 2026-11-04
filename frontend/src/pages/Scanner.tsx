@@ -3,7 +3,7 @@ import { post } from "../api";
 import { Card, Empty } from "../components/ui";
 
 export default function Scanner() {
-  const [path, setPath] = useState("~/Desktop");
+  const [path, setPath] = useState("~/Desktop/keylens");
   const [res, setRes] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -23,7 +23,7 @@ export default function Scanner() {
           <input className="mono" style={{ flex: 1 }} value={path} onChange={(e) => setPath(e.target.value)} />
           <button className="btn primary" onClick={run} disabled={busy}>{busy ? "Scanning…" : "Scan"}</button>
         </div>
-        <p className="sub" style={{ margin: "8px 0 0", fontSize: 12.5 }}>Runs locally only. Skips node_modules, .git, virtualenvs, binaries and files over 2 MB.</p>
+        <p className="sub" style={{ margin: "8px 0 0", fontSize: 12.5 }}>Read-only and local only: nothing is uploaded or changed. Skips node_modules, .git, virtualenvs, binaries and files over 2 MB.</p>
         {error && <div className="error">{error}</div>}
       </Card>
       {res && (
