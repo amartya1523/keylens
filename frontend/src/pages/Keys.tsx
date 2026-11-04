@@ -109,11 +109,16 @@ function KeyCard({ k, open, toggle, reload }: { k: any; open: boolean; toggle: (
       </div>
 
       <div className="grid g4 mt">
-        <Stat label="Requests (all time)" value={num(k.stats.n)} />
-        <Stat label="Tokens" value={compact(k.stats.tokens)} />
+        <Stat label="Requests via KeyLens" value={num(k.stats.n)} />
+        <Stat label="Tokens via KeyLens" value={compact(k.stats.tokens)} />
         <Stat label="Paid / list price" value={`${usd(k.stats.actual)} / ${usd(k.stats.list_cost)}`} />
-        <Stat label="Last used" value={ago(k.stats.last_used)} />
+        <Stat label="Last used via KeyLens" value={ago(k.stats.last_used)} />
       </div>
+      <p className="sub" style={{ marginTop: 6 }}>
+        These numbers count only requests sent through this account's virtual keys, from the moment the key was added.
+        {k.provider_name}'s own console counts every call made with the key, from any client, so it will usually be higher.
+        {k.stats.n === 0 && " To see traffic here, create an app on Apps & virtual keys and point it at KeyLens."}
+      </p>
 
       {k.limits.length > 0 && (
         <div className="mt">
