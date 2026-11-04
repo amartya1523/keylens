@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>KeyLens Build Write-up</title>
+<style>
+  @page { size: A4; margin: 9mm 10mm; }
+  :root { --ink:#16181d; --mute:#5b6270; --line:#d9dde4; --acc:#4f46e5; --ok:#15803d; --warn:#b4541a; --bad:#dc2626; --bg:#f5f7fb; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; color: var(--ink); font-size: 8.35pt; line-height: 1.3; margin: 0; }
+  h1 { font-size: 17pt; margin: 0 0 1px; letter-spacing: -0.3px; }
+  h2, h3 { break-after: avoid; }
+  h2 { font-size: 10.8pt; margin: 9px 0 3px; color: var(--acc); border-bottom: 1px solid var(--line); padding-bottom: 2px; }
+  h3 { font-size: 9.2pt; margin: 6px 0 2px; }
+  p { margin: 2px 0 5px; }
+  ul { margin: 2px 0 5px; padding-left: 15px; }
+  li { margin: 1px 0; }
+  .sub { color: var(--mute); font-size: 8.4pt; margin-bottom: 6px; }
+  .tldr { background: var(--bg); border-left: 3px solid var(--acc); padding: 5px 10px; margin: 5px 0; }
+  table { border-collapse: collapse; width: 100%; margin: 3px 0 6px; font-size: 8pt; }
+  th, td { border: 1px solid var(--line); padding: 2px 5px; vertical-align: top; text-align: left; }
+  th { background: var(--bg); }
+  tr, figure, .box { break-inside: avoid; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .box { border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; }
+  .ok { color: var(--ok); font-weight: 600; } .warn { color: var(--warn); font-weight: 600; }
+  figure { margin: 4px 0 6px; }
+  figure img { width: 100%; border: 1px solid var(--line); border-radius: 4px; display: block; }
+  figcaption { color: var(--mute); font-size: 7.8pt; margin-top: 2px; }
+  code { font-family: ui-monospace, Menlo, monospace; font-size: 7.8pt; background: var(--bg); padding: 0 3px; border-radius: 3px; }
+  .formula { font-family: ui-monospace, Menlo, monospace; font-size: 8pt; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; margin: 3px 0 5px; }
+  .pb { break-before: page; }
+  svg text { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  .big { font-size: 15pt; font-weight: 700; color: var(--acc); }
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin: 5px 0; }
+  .stats .box { text-align: center; padding: 4px; }
+  .stats .lbl { color: var(--mute); font-size: 7.6pt; }
+</style>
+</head>
+<body>
+
+<h1>KeyLens: see where an LLM API key is used</h1>
+<div class="sub">Build write-up · Amartya Vikram Singh · November 2026 · companion to the Guickly design doc · repo: github.com/amartya1523/keylens</div>
+
+<div class="tldr">
+<b>What I built.</b> A working slice of the Guickly design: paste an LLM API key (Groq, xAI, OpenAI, Anthropic, OpenRouter), give each app its own virtual key, and see <b>which app used the key, from which client and IP, on which model, with how many tokens, at what cost</b>. It also shows what the traffic <i>would</i> cost off the free tier, how much rate limit is left, and <b>how many requests used the key without going through KeyLens at all</b>. Metadata only: no prompt or reply text is ever stored, and a test proves it.<br>
+<b>Why.</b> The design doc argues that you must reconcile what the provider reports against what you observe yourself, and that coverage must be measured, not claimed. I wanted to test that with real traffic, so I built the narrowest version that touches a real provider end to end.<br>
+<b>Result.</b> Tested live on Groq: 46 requests from 5 kinds of client across 3 apps. 9 requests were sent around KeyLens on purpose and <b>KeyLens counted exactly 9</b>, with no false ghosts on the other model. KeyLens adds about 48 ms per request. Three test suites run, and the whole build history is in small commits.
+</div>
+
+<div class="stats">
+  <div class="box"><div class="big">9 / 9</div><div class="lbl">outside requests detected (0 false)</div></div>
+  <div class="box"><div class="big">5</div><div class="lbl">client types told apart (SDKs, curl, requests, browser)</div></div>
+  <div class="box"><div class="big">76%</div><div class="lbl">of output tokens were hidden reasoning</div></div>
+  <div class="box"><div class="big">~48 ms</div><div class="lbl">added per request (median, n=6)</div></div>
+  <div class="box"><div class="big">0 bytes</div><div class="lbl">of prompt or reply stored (canary test)</div></div>
+</div>
+
+<h2>1. The question, and what a key alone can tell you</h2>
+<p>I started with a narrow question: <i>if all I have is an API key, can I find out where it is being used?</i> I checked each provider's docs and made live calls with a Groq key. The honest answer is mostly no:</p>
+<table>
+<tr><th style="width:15%">Provider</th><th>What a normal key can learn about itself</th><th style="width:36%">Per-key usage needs</th></tr>
+<tr><td>Groq</td><td>Model list only. There is no usage API (404 on every usage path). But every response carries rate-limit counters, queue and compute time, and a region code.</td><td>Not available (enterprise metrics are per project, not per key)</td></tr>
+<tr><td>xAI (Grok)</td><td><code>GET /v1/api-key</code>: name, ACLs, team, blocked flags. Responses report their own cost in <code>cost_in_usd_ticks</code>.</td><td>Management key: usage grouped by <b>api_key_id and request_ip</b></td></tr>
+<tr><td>OpenAI / Anthropic</td><td>Nothing beyond models and per-minute rate limits.</td><td>Separate admin key: usage by <code>api_key_id</code></td></tr>
+<tr><td>OpenRouter</td><td><code>GET /api/v1/key</code>: usage, daily usage, limit, free-tier flag</td><td>n/a</td></tr>
+</table>
+<p><b>No provider tells a normal key holder <i>where</i> the key was called from.</b> So two design decisions follow, and they match the design doc's principles:</p>
+<ul>
+  <li><b>Be in the path, with a config change only.</b> Each app gets a <code>kl_live_…</code> virtual key and points its <code>base_url</code> at KeyLens. No code changes. KeyLens swaps in the real key and streams the answer back untouched.</li>
+  <li><b>Measure what you <i>can't</i> see.</b> Provider counters cover all traffic, ours only what we proxy. Comparing the two turns a proxy into a coverage meter and a leak detector.</li>
+</ul>
+
+<h2>2. Architecture</h2>
+<svg viewBox="0 0 760 250" width="86%" style="display:block;margin:0 auto" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6270"/></marker>
+  <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/></marker></defs>
+  <text x="8" y="14" font-size="10" font-weight="700" fill="#5b6270">YOUR APPS (one virtual key each)</text>
+  <g font-size="9.5">
+    <rect x="8" y="24" width="160" height="30" rx="4" fill="#f5f7fb" stroke="#d9dde4"/><text x="16" y="43">Backend · OpenAI / Groq SDK</text>
+    <rect x="8" y="60" width="160" height="30" rx="4" fill="#f5f7fb" stroke="#d9dde4"/><text x="16" y="79">Scripts · curl, requests</text>
+    <rect x="8" y="96" width="160" height="30" rx="4" fill="#f5f7fb" stroke="#d9dde4"/><text x="16" y="115">Web app · browser fetch</text>
+    <rect x="8" y="150" width="160" height="30" rx="4" fill="#fef2f2" stroke="#fecaca"/><text x="16" y="169" fill="#dc2626">Unknown caller with the real key</text>
+  </g>
+  <g stroke="#5b6270" stroke-width="1.1" marker-end="url(#a)"><line x1="168" y1="39" x2="226" y2="70"/><line x1="168" y1="75" x2="226" y2="78"/><line x1="168" y1="111" x2="226" y2="88"/></g>
+  <rect x="228" y="24" width="250" height="116" rx="6" fill="#fff" stroke="#4f46e5" stroke-width="1.5"/>
+  <text x="238" y="42" font-size="10.5" font-weight="700">KeyLens proxy  /v1/*  /openai/v1/*</text>
+  <g font-size="8.6" fill="#16181d">
+    <text x="238" y="58">1. virtual key → app, kill switch, budget, endpoint allowlist</text>
+    <text x="238" y="72">2. real key decrypted (Fernet), request forwarded</text>
+    <text x="238" y="86">3. stream relayed byte for byte; only usage lines parsed</text>
+    <text x="238" y="100">4. source classified from headers (browser / SDK / CLI)</text>
+    <text x="238" y="114">5. metadata written after the response is sent</text>
+    <text x="238" y="128" fill="#dc2626">prompt and reply text: read in memory, never stored</text>
+  </g>
+  <rect x="560" y="40" width="190" height="60" rx="6" fill="#f5f7fb" stroke="#d9dde4"/>
+  <text x="572" y="60" font-size="10" font-weight="700">LLM provider</text>
+  <text x="572" y="75" font-size="8.4" fill="#5b6270">Groq · xAI · OpenAI · Anthropic</text>
+  <text x="572" y="88" font-size="8.4" fill="#5b6270">rate-limit counters cover ALL traffic</text>
+  <g stroke="#5b6270" stroke-width="1.2" marker-end="url(#a)"><line x1="478" y1="62" x2="558" y2="62"/></g>
+  <g stroke="#0d9488" stroke-width="1.2" marker-end="url(#a)"><line x1="558" y1="82" x2="480" y2="82"/></g>
+  <text x="486" y="56" font-size="8" fill="#5b6270">request</text><text x="484" y="96" font-size="8" fill="#0d9488">reply + headers</text>
+  <path d="M168,165 C330,195 520,170 600,102" fill="none" stroke="#dc2626" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#r)"/>
+  <text x="372" y="190" font-size="8.4" fill="#dc2626">bypasses KeyLens, but still drains the provider's counter → "ghost usage"</text>
+  <rect x="228" y="206" width="250" height="38" rx="6" fill="#f3fbf8" stroke="#a9d8c8"/>
+  <text x="238" y="222" font-size="9.5" font-weight="700">SQLite: events + rate-limit snapshots</text>
+  <text x="238" y="236" font-size="8.3" fill="#5b6270">no content columns · 30-day retention purge</text>
+  <rect x="540" y="206" width="210" height="38" rx="6" fill="#eef2ff" stroke="#c7d2fe"/>
+  <text x="550" y="222" font-size="9.5" font-weight="700">Dashboard (React)</text>
+  <text x="550" y="236" font-size="8.3" fill="#5b6270">where used · cost · limits · insights</text>
+  <g stroke="#5b6270" stroke-width="1.1" marker-end="url(#a)"><line x1="353" y1="140" x2="353" y2="204"/><line x1="478" y1="225" x2="538" y2="225"/></g>
+</svg>
+<p class="sub" style="margin-top:2px">Backend: FastAPI + httpx (HTTP/2, streaming) + SQLite, about 1,900 lines. Frontend: React + TypeScript + Recharts, 9 pages. Prices come from a bundled snapshot of LiteLLM's public price list (732 models).</p>
+
+<h2>3. The three hard parts</h2>
+<h3>3.1 Ghost usage: counting requests you never saw</h3>
+<p>Groq returns <code>x-ratelimit-limit-requests: 1000</code> (per day), <code>remaining</code>, and <code>reset-requests</code>, the time until the daily bucket is full again. Live check: after 1 request the reset was <b>86.4 s</b>, after 2 it was <b>172.8 s</b>. 86,400 s / 1,000 = 86.4 s. So the bucket refills one whole request every 86.4 s, and the header gives the number of requests spent recently:</p>
+<div class="formula">provider_used = reset_seconds × limit / 86400<br>expected = previous_reading − floor(refill since then) + requests KeyLens sent since then<br>ghosts += floor(provider_used − expected)   (only when the gap is ≥ 1)</div>
+<p><b>What the first version got wrong:</b> a continuous refill model with a fixed tolerance of 1.5. It under-counted (4 sent → 3 reported) and could invent ghosts after idle gaps, because Groq rounds the deficit up to a whole request. The review round simulated it. The fixed version re-anchors on every provider reading, credits only refills that must have happened, uses the time the headers arrived (not when the stream ended), ignores requests the provider never counted (5xx, 429), and turns itself off for per-minute windows, where an outside call refills before you can see it.</p>
+<table>
+<tr><th>Validation</th><th>Sent around KeyLens</th><th>Reported</th></tr>
+<tr><td>Live Groq, <code>gpt-oss-20b</code>, two rounds (4 + 5 direct calls)</td><td>9</td><td class="ok">9</td></tr>
+<tr><td>Live Groq, <code>gpt-oss-120b</code> (11-minute idle gap in between)</td><td>0</td><td class="ok">0</td></tr>
+<tr><td>Simulated bucket, 1–10 outside calls next to KeyLens traffic</td><td>n</td><td class="ok">n (exact)</td></tr>
+<tr><td>Simulated, idle gaps 1 min–5.5 h, 4 refill phases, no outside calls</td><td>0</td><td class="ok">0 (never over-counts)</td></tr>
+<tr><td>Simulated, outside calls before a 10-minute idle gap</td><td>2n</td><td class="warn">2n−1 to 2n (lower bound)</td></tr>
+</table>
+<p>Limits are per organization and model, so the dashboard words it as <i>"used outside KeyLens"</i> and never blames a specific key. The same numbers drive a <b>coverage %</b> (seen ÷ (seen + ghost)), which is the design doc's headline metric, here measured live.</p>
+
+<div class="two">
+<figure><img src="screenshots/ghost-usage.jpg"><figcaption>Keys page: provider counter (pink) vs what KeyLens saw (purple). The step is the 9 outside calls.</figcaption></figure>
+<figure><img src="screenshots/where-used.jpg"><figcaption>Where the key is used: key → app → client → IP, plus the red branch for traffic counted but never seen.</figcaption></figure>
+</div>
+
+<h3>3.2 Where the call came from, with no content</h3>
+<table>
+<tr><th style="width:44%">Signal (request headers only)</th><th>Label in the dashboard</th></tr>
+<tr><td><code>Mozilla/</code> UA + <code>Sec-Fetch-Mode</code> / <code>Origin</code></td><td>Browser, e.g. "Chrome · http://localhost:5173" (host only, never the page path)</td></tr>
+<tr><td><code>OpenAI/Python</code>, <code>Groq/Python</code>, <code>x-stainless-runtime/os</code></td><td>"OpenAI SDK (Python) · CPython 3.12.2 · MacOS"</td></tr>
+<tr><td><code>curl/</code>, <code>PostmanRuntime/</code>, <code>python-requests/</code></td><td>CLI / API client, HTTP library</td></tr>
+</table>
+<p>Review caught a real bug here: Node's built-in fetch also sends <code>Sec-Fetch-Mode</code>, so Node scripts were labelled "browser". The fix requires a browser user-agent as well. Labels are hints, since any client can fake a user-agent. The doc says so, and so does the UI.</p>
+
+<h3>3.3 Cost that tells the truth</h3>
+<ul>
+  <li><b>Two numbers per request:</b> what you actually paid ($0 on Groq's free tier, detected from its 8K TPM limit or set by hand) and the list price. The home screen leads with <b>"Free tier saved you $X"</b>.</li>
+  <li><b>Hidden reasoning tokens</b> are counted separately. They were 76% of output on <code>gpt-oss</code>, which becomes an insight with a fix ("set reasoning_effort low").</li>
+  <li><b>Provider edge cases:</b> xAI's own <code>cost_in_usd_ticks</code> wins when present · Anthropic cache reads and writes are added back into input tokens · OpenRouter <code>:free</code> models cost $0 · dated aliases resolve, but <code>-fast</code> variants are never priced as the base model.</li>
+  <li><b>Latency split:</b> Groq reports queue and compute time. Median queue was ~580 ms against ~50 ms compute, so the dashboard can say "your code is not the slow part".</li>
+</ul>
+
+<h2>4. What it looks like</h2>
+<figure><img src="screenshots/overview.jpg" style="width:62%;margin:0 auto"><figcaption style="text-align:center">Overview on live data: requests, tokens incl. reasoning, free-tier savings, latency, tightest daily quota, and coverage (red because 9 requests went around), then insight cards with a confidence level and a next step.</figcaption></figure>
+<div class="two">
+<figure><img src="screenshots/request-detail.jpg"><figcaption>Every request opens to the exact JSON that was stored: headers, usage, request parameters (numbers only). No text.</figcaption></figure>
+<figure><img src="screenshots/charts.jpg"><figcaption>Requests by app, tokens by type, cost paid vs list, source mix, model mix.</figcaption></figure>
+</div>
+
+<h2>5. What I added beyond "show me the usage"</h2>
+<table>
+<tr><th style="width:26%">Feature</th><th>Why it matters</th></tr>
+<tr><td>Ghost usage + coverage %</td><td>The only signal here that a normal key can't get from any provider console. It catches leaked keys and unrouted apps.</td></tr>
+<tr><td>Provider auto-detection</td><td>Paste any key; the provider is detected from its prefix and checked with free calls only (model list, the provider's own key-info endpoint).</td></tr>
+<tr><td>Per-app kill switch and budget</td><td>Pause one app (HTTP 403) or cap it (429) without rotating the real key. Responses carry <code>x-keylens-budget-used</code>.</td></tr>
+<tr><td>Quota forecast</td><td>"At this pace the daily limit runs out in ~N h", computed per model with the bucket aged forward.</td></tr>
+<tr><td>Cheaper-model hypothesis</td><td>Short answers on a large model lead to a suggestion with $ saved at list price, labelled <i>low confidence: test quality first</i>, because content is never seen.</td></tr>
+<tr><td>Key scanner</td><td>Finds where a key sits on disk and in shell history, whether git tracks it or has it in history, and rates the risk. Keys are only ever shown masked. It runs git with hooks disabled in untrusted repos.</td></tr>
+<tr><td>Browser playground</td><td>Calls the proxy from a real browser, so the "Browser" source is demonstrated, not claimed.</td></tr>
+</table>
+
+<h2>6. How it maps to the design doc, honestly</h2>
+<table>
+<tr><th style="width:30%">Design-doc rule</th><th style="width:14%">Status</th><th>In the build</th></tr>
+<tr><td>Metadata only; content never stored</td><td class="ok">met</td><td>No content columns. The canary test sends a unique prompt and reply (streaming and not) and fails if either appears anywhere in the database dump. Origins are stored as host only, and the raw metadata is capped at 4 KB.</td></tr>
+<tr><td>Measured coverage, not claimed</td><td class="ok">met</td><td>Coverage % from ghost inference, on the home screen.</td></tr>
+<tr><td>Reconcile provider data vs own observations</td><td class="ok">met</td><td>Rate-limit counters vs proxied traffic. Usage-API connectors (xAI management, OpenAI/Anthropic admin) are documented as the next step.</td></tr>
+<tr><td>No code changes for customers</td><td class="ok">met</td><td>Only <code>base_url</code> and the API key change. Works with the OpenAI and Groq SDKs, curl and browsers.</td></tr>
+<tr><td>Fail open; never break work</td><td class="warn">partly</td><td>Logging failures never break a request, and metadata is written after the response. If the KeyLens process itself is down, apps pointed at it fail. The doc's answer is a load-balancer bypass, which is not built here.</td></tr>
+<tr><td>Own gateway only in v3 (in-path is the top risk)</td><td class="warn">deliberately broken</td><td>I built the in-path slice on purpose. It is the only slice one person can make real with live provider traffic in a few days, and it tests the riskiest claim: that metadata alone answers "where and how much". In the product I would still ship the zero-install connectors first.</td></tr>
+<tr><td>Pseudonymous IDs, team floor ≥5</td><td class="warn">not yet</td><td>Single-user tool. Raw IPs are kept for 30 days (configurable), because the IP <i>is</i> the "where". Hashing them and team aggregation come with multi-user orgs.</td></tr>
+</table>
+
+<h2>7. How it was built and checked</h2>
+<ul>
+  <li><b>Research first:</b> 10 parallel research passes covered each provider's docs (Groq, xAI, OpenAI/Anthropic/OpenRouter), price sources, client fingerprinting, gateway design, ghost math, the scanner and the UX, plus live probes of the Groq key. Notes are in <code>docs/research.md</code>.</li>
+  <li><b>Then 5 independent reviews</b> (backend correctness, security, frontend, ghost math, an interviewer's read) found real issues, all fixed: a metering bypass via an encoded <code>%23models</code> path (now an endpoint allowlist) · DNS rebinding against the local API (trusted hosts) · cross-user queries missing <code>user_id</code> · Anthropic cache pricing · stream aborts losing events · gzip handling · scientific notation in tiny costs · the ghost model itself.</li>
+  <li><b>Tests:</b> <code>test_privacy.py</code> (canary text never stored) · <code>test_proxy_rules.py</code> (allowlist, kill switch, budget, bad keys, odd bodies, Host check) · <code>test_ghost.py</code> (never over-counts, exact for close readings).</li>
+  <li><b>Measured overhead:</b> about 100 ms added at first. Writing metadata after the response and caching the cipher brought it to about 48 ms. The next step is caching virtual-key lookups.</li>
+</ul>
+
+<h2>8. Limits and next steps</h2>
+<ul>
+  <li>Only Groq was tested with a live key. The xAI, OpenAI, Anthropic and OpenRouter code paths follow their docs but were not called for real.</li>
+  <li>Ghost inference needs a long request window (Groq's daily limit). Outside calls are only visible within the refill time (~86 s per request on a 1,000/day limit), so it is a lower bound by design.</li>
+  <li><b>Next:</b> usage-API connectors (xAI groups by key and IP, so per-IP history works even before KeyLens existed) · multi-user orgs with identity resolution and pseudonymous IDs · a fail-open bypass · cached key lookups.</li>
+</ul>
+<p class="sub"><b>Run it:</b> <code>cd backend && pip install -r requirements.txt && uvicorn app.main:app</code> · <code>cd frontend && npm install && npm run dev</code> · sign up → paste a key → create an app → call <code>http://localhost:8000/v1</code> with its virtual key.</p>
+
+</body>
+</html>
