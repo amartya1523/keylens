@@ -182,11 +182,14 @@ def _upstream_url(provider_id: str, path: str) -> str:
 
 
 @router.options("/v1/{path:path}")
+@router.options("/openai/v1/{path:path}")
 async def preflight(path: str):
     return Response(status_code=204)
 
 
+# /openai/v1 is the path the Groq SDK appends to its base_url.
 @router.api_route("/v1/{path:path}", methods=["GET", "POST"])
+@router.api_route("/openai/v1/{path:path}", methods=["GET", "POST"])
 async def proxy(path: str, request: Request):
     auth = request.headers.get("authorization", "")
     token = auth[7:].strip() if auth.lower().startswith("bearer ") else request.headers.get("x-api-key", "")
