@@ -2,10 +2,16 @@ import { useState, type ReactNode } from "react";
 
 export const COLORS = ["#4f46e5", "#f97316", "#0d9488", "#db2777", "#65a30d", "#7c3aed", "#0284c7", "#ca8a04"];
 
-export function Kpi({ label, value, hint, alert }: { label: string; value: ReactNode; hint?: ReactNode; alert?: boolean }) {
+export function Info({ text }: { text: string }) {
+  return <span className="info" tabIndex={0} title={text} aria-label={text}>ⓘ</span>;
+}
+
+export function Kpi({ label, value, hint, alert, good, info }: {
+  label: string; value: ReactNode; hint?: ReactNode; alert?: boolean; good?: boolean; info?: string;
+}) {
   return (
-    <div className={`card tight kpi${alert ? " alert" : ""}`}>
-      <div className="label">{label}</div>
+    <div className={`card tight kpi${alert ? " alert" : ""}${good ? " good" : ""}`}>
+      <div className="label">{label} {info && <Info text={info} />}</div>
       <div className="value">{value}</div>
       {hint && <div className="hint">{hint}</div>}
     </div>
