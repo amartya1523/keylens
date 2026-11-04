@@ -2,6 +2,7 @@
 import csv
 import io
 import json
+import os
 import statistics
 import time
 from collections import Counter, defaultdict
@@ -15,7 +16,8 @@ from . import insights, pricing, scanner
 from .config import SESSION_DAYS
 from .db import jload, rows, tx
 from .providers import PROVIDERS, auth_headers, check_key, detect
-from .ratelimits import forecast, ghost_analysis, snapshot_from_headers
+from .proxy import _is_free
+from .ratelimits import snapshot_from_headers
 from .security import (decrypt_key, encrypt_key, fingerprint, hash_password, hint, mask,
                        new_session_token, new_virtual_key, sha256, verify_password)
 
@@ -168,16 +170,16 @@ def list_keys(user=Depends(current_user)):
             agg = conn.execute(
                 """SELECT COUNT(*) n, COALESCE(SUM(prompt_tokens+completion_tokens),0) tokens,
                           COALESCE(SUM(list_cost_usd),0) list_cost, COALESCE(SUM(actual_cost_usd),0) actual,
-                          MAX(ts) last_used FROM events WHERE key_id=?""", (k["id"],)).fetchone()
+                          MAX(ts) last_used FROM events WHERE user_id=? AND key_id=?""",
+                (user["id"], k["id"])).fetchone()
             item["stats"] = dict(agg)
-            item["apps"] = conn.execute("SELECT COUNT(*) FROM apps WHERE key_id=?", (k["id"],)).fetchone()[0]
-            snaps = rows(conn.execute(
+            item["apps"] = conn.execute("SELECT COUNT(*) FROM apps WHERE user_id=? AND key_id=?",
+                                        (user["id"], k["id"])).fetchone()[0]
+            item["limits"] = rows(conn.execute(
                 """SELECT * FROM ratelimit_snapshots WHERE key_id=? AND id IN
                      (SELECT MAX(id) FROM ratelimit_snapshots WHERE key_id=? GROUP BY model)""",
                 (k["id"], k["id"])))
-            item["limits"] = snaps
-            ev_ts = [r[0] for r in conn.execute("SELECT ts FROM events WHERE key_id=? AND ts>?", (k["id"], now - 3600))]
-            item["forecast"] = forecast(ev_ts, max(snaps, key=lambda s: s["ts"]) if snaps else None, now)
+            item["forecast"] = insights.latest_forecast(conn, user["id"], k, now)
             out.append(item)
     return out
 
@@ -199,6 +201,7 @@ def delete_key(key_id: int, user=Depends(current_user)):
         _own_key(conn, user["id"], key_id)
         conn.execute("DELETE FROM provider_keys WHERE id=?", (key_id,))
         conn.execute("DELETE FROM ratelimit_snapshots WHERE key_id=?", (key_id,))
+        conn.execute("DELETE FROM events WHERE user_id=? AND key_id=?", (user["id"], key_id))
     return {"ok": True}
 
 
@@ -235,7 +238,9 @@ async def probe_key(key_id: int, user=Depends(current_user)):
     t0 = time.time()
     async with httpx.AsyncClient(timeout=30) as client:
         r = await client.post(p.base_url + path, headers=auth_headers(p, raw), json=body)
+    t_headers = time.time()
     snap = snapshot_from_headers(r.headers)
+    free = _is_free(k["provider"], k["plan"], jload(k["key_info_json"], {}), snap)
     with tx() as conn:
         # A probe is traffic KeyLens itself sent: log it as an event of the KeyLens probe.
         usage = {}
@@ -249,10 +254,10 @@ async def probe_key(key_id: int, user=Depends(current_user)):
             """INSERT INTO events (user_id, key_id, app_id, ts, provider, endpoint, model, status,
                  source_class, source_detail, prompt_tokens, completion_tokens, latency_ms,
                  region, list_cost_usd, actual_cost_usd, upstream_id, raw_meta)
-               VALUES (?,?,NULL,?,?,?,?,?, 'probe','KeyLens rate-limit probe',?,?,?,?,?,0,?,?)""",
+               VALUES (?,?,NULL,?,?,?,?,?, 'probe','KeyLens rate-limit probe',?,?,?,?,?,?,?,?)""",
             (user["id"], key_id, t0, k["provider"], path, model, r.status_code,
              usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0),
-             (time.time() - t0) * 1000, r.headers.get("x-groq-region"), lc,
+             (t_headers - t0) * 1000, r.headers.get("x-groq-region"), lc, 0.0 if free else lc,
              r.headers.get("x-request-id"),
              json.dumps({"probe": True, "response_headers": {h: v for h, v in r.headers.items()
                                                               if "ratelimit" in h or h in ("x-request-id", "x-groq-region")}})))
@@ -261,7 +266,7 @@ async def probe_key(key_id: int, user=Depends(current_user)):
                 """INSERT INTO ratelimit_snapshots (key_id, ts, model, limit_requests, remaining_requests,
                      reset_requests_s, limit_tokens, remaining_tokens, reset_tokens_s, via)
                    VALUES (?,?,?,?,?,?,?,?,?, 'probe')""",
-                (key_id, time.time(), model, snap["limit_requests"], snap["remaining_requests"],
+                (key_id, t_headers, model, snap["limit_requests"], snap["remaining_requests"],
                  snap["reset_requests_s"], snap["limit_tokens"], snap["remaining_tokens"],
                  snap["reset_tokens_s"]))
     return {"model": model, "status": r.status_code, "limits": snap}
@@ -269,19 +274,9 @@ async def probe_key(key_id: int, user=Depends(current_user)):
 
 @router.get("/keys/{key_id}/ghost")
 def key_ghost(key_id: int, user=Depends(current_user)):
-    now = time.time()
     with tx() as conn:
-        _own_key(conn, user["id"], key_id)
-        models = [r[0] for r in conn.execute(
-            "SELECT DISTINCT model FROM ratelimit_snapshots WHERE key_id=? AND ts>?", (key_id, now - 86400))]
-        out = {}
-        for m in models:
-            snaps = rows(conn.execute("SELECT * FROM ratelimit_snapshots WHERE key_id=? AND model=? AND ts>? ORDER BY ts",
-                                      (key_id, m, now - 86400)))
-            own = [r[0] for r in conn.execute("SELECT ts FROM events WHERE key_id=? AND model=? AND ts>?",
-                                              (key_id, m, now - 86400))]
-            out[m] = ghost_analysis(snaps, own)
-    return out
+        k = _own_key(conn, user["id"], key_id)
+        return insights.ghost_by_model(conn, user["id"], k)
 
 
 # ---------------- apps / virtual keys ----------------
@@ -344,13 +339,15 @@ def list_apps(user=Depends(current_user)):
             agg = conn.execute(
                 """SELECT COUNT(*) n, COALESCE(SUM(prompt_tokens+completion_tokens),0) tokens,
                           COALESCE(SUM(list_cost_usd),0) list_cost, MAX(ts) last_used,
-                          COUNT(DISTINCT client_ip) ips FROM events WHERE app_id=?""", (a["id"],)).fetchone()
+                          COUNT(DISTINCT client_ip) ips FROM events WHERE user_id=? AND app_id=?""",
+                (user["id"], a["id"])).fetchone()
             a["stats"] = dict(agg)
             a["month_list_cost"] = conn.execute(
-                "SELECT COALESCE(SUM(list_cost_usd),0) FROM events WHERE app_id=? AND ts>?",
-                (a["id"], time.time() - 30 * 86400)).fetchone()[0]
+                "SELECT COALESCE(SUM(list_cost_usd),0) FROM events WHERE user_id=? AND app_id=? AND ts>?",
+                (user["id"], a["id"], time.time() - 30 * 86400)).fetchone()[0]
             a["sources"] = [dict(r) for r in conn.execute(
-                "SELECT source_class, COUNT(*) n FROM events WHERE app_id=? GROUP BY source_class", (a["id"],))]
+                "SELECT source_class, COUNT(*) n FROM events WHERE user_id=? AND app_id=? GROUP BY source_class",
+                (user["id"], a["id"]))]
     return apps
 
 
@@ -392,6 +389,8 @@ def delete_app(app_id: int, user=Depends(current_user)):
     with tx() as conn:
         _own_app(conn, user["id"], app_id)
         conn.execute("DELETE FROM apps WHERE id=?", (app_id,))
+        conn.execute("UPDATE events SET app_id=NULL, source_detail='deleted app · ' || COALESCE(source_detail,'') "
+                     "WHERE user_id=? AND app_id=?", (user["id"], app_id))
     return {"ok": True}
 
 
@@ -424,18 +423,18 @@ def overview(window: str = Query("24h", alias="range"), key_id: int | None = Non
         apps = {a["id"]: a["name"] for a in rows(conn.execute("SELECT id, name FROM apps WHERE user_id=?", (user["id"],)))}
         keys = rows(conn.execute("SELECT id, label, provider, masked FROM provider_keys WHERE user_id=?", (user["id"],)))
         latest_snaps = rows(conn.execute(
-            """SELECT s.* FROM ratelimit_snapshots s JOIN provider_keys k ON k.id=s.key_id
-               WHERE k.user_id=? AND s.id IN (SELECT MAX(id) FROM ratelimit_snapshots GROUP BY key_id, model)""",
-            (user["id"],)))
+            """SELECT s.* FROM ratelimit_snapshots s WHERE s.id IN
+                 (SELECT MAX(s2.id) FROM ratelimit_snapshots s2 JOIN provider_keys k ON k.id=s2.key_id
+                  WHERE k.user_id=? GROUP BY s2.key_id, s2.model)""", (user["id"],)))
         ghost_total = 0
         for k in keys:
             if key_id and k["id"] != key_id:
                 continue
-            for m in {s["model"] for s in latest_snaps if s["key_id"] == k["id"]}:
-                snaps = rows(conn.execute("SELECT * FROM ratelimit_snapshots WHERE key_id=? AND model=? AND ts>? ORDER BY ts",
-                                          (k["id"], m, now - 86400)))
-                own = [e["ts"] for e in _events(conn, user["id"], now - 86400, k["id"]) if e["model"] == m]
-                ghost_total += ghost_analysis(snaps, own)["ghost_requests"]
+            full = _own_key(conn, user["id"], k["id"])
+            ghost_total += sum(g["ghost_requests"] for g in insights.ghost_by_model(conn, user["id"], full, now).values())
+        seen_24h = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE user_id=? AND ts>?" + (" AND key_id=?" if key_id else ""),
+            (user["id"], now - 86400, *( [key_id] if key_id else []))).fetchone()[0]
 
     ok = [e for e in ev if (e["status"] or 0) < 400]
     lat = [e["latency_ms"] for e in ok if e["latency_ms"]]
@@ -460,6 +459,7 @@ def overview(window: str = Query("24h", alias="range"), key_id: int | None = Non
         "latency_p95": sorted(lat)[int(0.95 * (len(lat) - 1))] if lat else None,
         "error_rate": (len(ev) - len(ok)) / len(ev) if ev else 0,
         "headroom_pct": headroom, "ghost_requests": ghost_total,
+        "coverage_pct": (100 * seen_24h / (seen_24h + ghost_total)) if (seen_24h + ghost_total) else None,
         "apps": len({e["app_id"] for e in ev if e["app_id"]}),
         "sources": len({e["source_class"] for e in ev}),
         "ips": len({e["client_ip"] for e in ev if e["client_ip"]}),
@@ -616,6 +616,8 @@ class ScanIn(BaseModel):
 
 @router.post("/scan")
 def scan_files(body: ScanIn, request: Request, user=Depends(current_user)):
+    if os.environ.get("KEYLENS_ENABLE_SCANNER", "1") != "1":
+        raise HTTPException(403, "The file scanner is disabled (KEYLENS_ENABLE_SCANNER=0).")
     if request.client and request.client.host not in ("127.0.0.1", "::1", "localhost"):
         raise HTTPException(403, "The file scanner only runs for local requests.")
     with tx() as conn:
