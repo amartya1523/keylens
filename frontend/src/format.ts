@@ -10,8 +10,13 @@ export function usd(n: number | null | undefined) {
   if (n === 0) return "$0";
   if (Math.abs(n) >= 1) return `$${n.toFixed(2)}`;
   if (Math.abs(n) >= 0.01) return `$${n.toFixed(3)}`;
-  return `$${n.toPrecision(2)}`;
+  if (Math.abs(n) < 0.000001) return "<$0.000001";
+  // enough decimals for two significant digits, never scientific notation
+  return `$${n.toFixed(Math.min(8, 1 - Math.floor(Math.log10(Math.abs(n)))))}`;
 }
+
+/** Short dollar labels for chart axes. */
+export const usdAxis = (n: number) => (n === 0 ? "$0" : n >= 0.01 ? `$${n.toFixed(2)}` : `$${(n * 1000).toFixed(2)}m`);
 
 export const ms = (n: number | null | undefined) =>
   n == null ? "–" : n >= 1000 ? `${(n / 1000).toFixed(2)} s` : `${Math.round(n)} ms`;
