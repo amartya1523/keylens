@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_user_ts ON events(user_id, ts);
 CREATE INDEX IF NOT EXISTS idx_events_key ON events(key_id, ts);
+CREATE INDEX IF NOT EXISTS idx_events_app ON events(app_id, ts);
 
 -- Rate-limit snapshots read from provider responses, used for ghost-usage inference.
 CREATE TABLE IF NOT EXISTS ratelimit_snapshots (
