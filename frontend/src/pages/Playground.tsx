@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { API_BASE, api } from "../api";
 import { Card } from "../components/ui";
 import { ms, num } from "../format";
@@ -7,7 +8,8 @@ import { ms, num } from "../format";
  *  records a real browser source (Origin, Sec-Fetch-*, sec-ch-ua headers). */
 export default function Playground() {
   const [apps, setApps] = useState<any[]>([]);
-  const [vkey, setVkey] = useState("");
+  const location = useLocation();
+  const [vkey, setVkey] = useState<string>((location.state as any)?.vkey ?? "");
   const [model, setModel] = useState("openai/gpt-oss-20b");
   const [models, setModels] = useState<string[]>([]);
   const [prompt, setPrompt] = useState("Explain in one sentence what an API key is.");
@@ -16,12 +18,16 @@ export default function Playground() {
   const [stats, setStats] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const abort = useRef<AbortController | null>(null);
+  useEffect(() => () => abort.current?.abort(), []);
 
   useEffect(() => {
     api("/api/apps").then(setApps);
     api("/api/keys").then((ks) => {
       const ids = ks.flatMap((k: any) => k.models.map((m: any) => m.id)).filter((m: string) => !/whisper|guard|orpheus|tts/.test(m));
-      setModels([...new Set<string>(ids)]);
+      const list = [...new Set<string>(ids)];
+      setModels(list);
+      setModel((m) => (list.includes(m) || !list.length ? m : list[0]));
     });
   }, []);
 
@@ -31,11 +37,14 @@ export default function Playground() {
     setError("");
     setStats(null);
     const t0 = performance.now();
+    abort.current = new AbortController();
     try {
       const res = await fetch(`${API_BASE}/v1/chat/completions`, {
         method: "POST",
+        signal: abort.current.signal,
         headers: { Authorization: `Bearer ${vkey.trim()}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ model, stream, max_tokens: 300, messages: [{ role: "user", content: prompt }] }),
+        body: JSON.stringify({ model, stream, max_tokens: 300, messages: [{ role: "user", content: prompt }],
+          ...(stream ? { stream_options: { include_usage: true } } : {}) }),
       });
       const limits = { left: res.headers.get("x-ratelimit-remaining-requests"), limit: res.headers.get("x-ratelimit-limit-requests") };
       if (!res.ok) {
@@ -47,22 +56,26 @@ export default function Playground() {
         const reader = res.body.getReader();
         const dec = new TextDecoder();
         let buf = "";
+        const handle = (line: string) => {
+          if (!line.startsWith("data:")) return;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") return;
+          let evt: any;
+          try { evt = JSON.parse(payload); } catch { return; }
+          if (evt.error) throw new Error(evt.error.message ?? "stream error");
+          const piece = evt.choices?.[0]?.delta?.content;
+          if (piece) setOut((o) => o + piece);
+          usage = evt.usage ?? evt.x_groq?.usage ?? usage;
+        };
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
           buf += dec.decode(value, { stream: true });
           const lines = buf.split("\n");
           buf = lines.pop() ?? "";
-          for (const line of lines) {
-            if (!line.startsWith("data:") || line.includes("[DONE]")) continue;
-            try {
-              const evt = JSON.parse(line.slice(5));
-              const piece = evt.choices?.[0]?.delta?.content;
-              if (piece) setOut((o) => o + piece);
-              usage = evt.usage ?? evt.x_groq?.usage ?? usage;
-            } catch { /* partial line */ }
-          }
+          lines.forEach(handle);
         }
+        handle(buf);
       } else {
         const body = await res.json();
         setOut(body.choices?.[0]?.message?.content ?? "");
@@ -70,7 +83,7 @@ export default function Playground() {
       }
       setStats({ ms: performance.now() - t0, usage, limits });
     } catch (e: any) {
-      setError(e.message);
+      if (e.name !== "AbortError") setError(e.message);
     } finally {
       setBusy(false);
     }
@@ -102,7 +115,10 @@ export default function Playground() {
           <label className="field">Prompt (sent to the provider, never stored by KeyLens)
             <textarea rows={4} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
           </label>
-          <button className="btn primary" disabled={busy || !vkey} onClick={send}>{busy ? "Sending…" : "Send from browser"}</button>
+          <div className="row">
+            <button className="btn primary" disabled={busy || !vkey} onClick={send}>{busy ? "Sending…" : "Send from browser"}</button>
+            {busy && <button className="btn" onClick={() => abort.current?.abort()}>Stop</button>}
+          </div>
           {error && <div className="error">{error}</div>}
         </Card>
         <Card title="Reply">
