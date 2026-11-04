@@ -62,9 +62,20 @@ def _repo_root(path: Path) -> Path | None:
     return None
 
 
+# Scanned repos are untrusted: never let their config run hooks or fsmonitor programs.
+_SAFE_GIT = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
+             "-c", "protocol.allow=never", "-c", "diff.external="]
+
+
 def _git(repo: Path, *args, stdin: str | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args], input=stdin, capture_output=True,
-                          text=True, timeout=30)
+    return subprocess.run(["git", *_SAFE_GIT, "-C", str(repo), *args], input=stdin,
+                          capture_output=True, text=True, timeout=30,
+                          env={**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"})
+
+
+def _clean_remote(url: str) -> str:
+    """Drop user:token@ from remote URLs before showing them."""
+    return re.sub(r"(https?://)[^/@]+@", r"\1", url)
 
 
 def _history_commits(repo: Path, secret: str) -> list[str]:
@@ -120,11 +131,17 @@ def scan(root: str, stored_keys: dict[str, str]) -> dict:
         if not any(k in buf for k in stored_keys.values()) and not any(r.search(buf) for r in _RX.values()):
             continue
         for ln, line in enumerate(buf.splitlines(), 1):
+            seen = set()
+            for raw in stored_keys.values():       # your own keys, whatever their format
+                if raw in line:
+                    seen.add(raw)
+                    findings.append(_finding(path, ln, "stored key", raw, True, repo_cache))
             for prov, rx in _RX.items():
                 for m in rx.finditer(line):
                     secret = m.group(0)
-                    if _entropy(secret) < 3.5:
+                    if secret in seen or _entropy(secret) < 3.5:
                         continue
+                    seen.add(secret)
                     fp = fingerprint(secret)
                     findings.append(_finding(path, ln, prov, secret, fp in stored_keys, repo_cache))
     findings.sort(key=lambda f: ["critical", "high", "medium", "low"].index(f["risk"]))
@@ -136,7 +153,7 @@ def _finding(path: Path, line: int, provider: str, secret: str, mine: bool, cach
     tracked, history, remote = False, [], None
     if repo:
         if repo not in cache:
-            remote = _git(repo, "remote", "get-url", "origin").stdout.strip() or None
+            remote = _clean_remote(_git(repo, "remote", "get-url", "origin").stdout.strip()) or None
             cache[repo] = {"remote": remote, "hist": {}}
         remote = cache[repo]["remote"]
         rel = str(path.relative_to(repo))
