@@ -285,7 +285,8 @@ async def proxy(path: str, request: Request):
         usage: dict = {}
         buffer = b""
         try:
-            async for chunk in upstream.aiter_raw():
+            # aiter_bytes decodes gzip/br, which matches dropping content-encoding above
+            async for chunk in upstream.aiter_bytes():
                 if "ttfb_ms" not in meta:
                     meta["ttfb_ms"] = (time.monotonic() - meta["t0"]) * 1000
                 yield chunk
