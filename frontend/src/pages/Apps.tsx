@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, del, patch, post } from "../api";
 import { Card, CodeBlock, Empty } from "../components/ui";
 import { SOURCE_LABEL, ago, compact, num, usd } from "../format";
@@ -11,13 +12,18 @@ export default function Apps() {
   const [form, setForm] = useState({ key_id: "", name: "", kind: "backend", budget_usd: "" });
   const [created, setCreated] = useState<any>(null);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const safe = (fn: () => Promise<any>) => fn().then(load).catch((e) => alert(e.message));
 
+  const navigate = useNavigate();
   const load = () => { api("/api/apps").then(setApps); api("/api/keys").then(setKeys); };
   useEffect(load, []);
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     setError("");
+    setBusy(true);
     try {
       const res = await post("/api/apps", {
         key_id: Number(form.key_id || keys[0]?.id), name: form.name, kind: form.kind,
@@ -28,14 +34,20 @@ export default function Apps() {
       load();
     } catch (err: any) {
       setError(err.message);
+    } finally {
+      setBusy(false);
     }
   };
 
   const rotate = async (a: any) => {
     if (!confirm(`Rotate the virtual key for ${a.name}? The old one stops working immediately.`)) return;
-    const res = await post(`/api/apps/${a.id}/rotate`);
-    setCreated({ ...res, name: a.name });
-    load();
+    try {
+      const res = await post(`/api/apps/${a.id}/rotate`);
+      setCreated({ ...res, name: a.name });
+      load();
+    } catch (e: any) {
+      alert(e.message);
+    }
   };
 
   return (
@@ -64,10 +76,10 @@ export default function Apps() {
                 {KINDS.map((k) => <option key={k}>{k}</option>)}
               </select>
             </label>
-            <label className="field" style={{ margin: 0 }}>Monthly budget $ (list price)
+            <label className="field" style={{ margin: 0 }}>Budget, last 30 days ($ at list price)
               <input type="number" step="0.01" min="0" placeholder="none" value={form.budget_usd} onChange={(e) => setForm({ ...form, budget_usd: e.target.value })} />
             </label>
-            <button className="btn primary">Create</button>
+            <button className="btn primary" disabled={busy}>{busy ? "Creating…" : "Create"}</button>
           </form>
           {error && <div className="error">{error}</div>}
         </Card>
@@ -77,7 +89,10 @@ export default function Apps() {
         <div className="card mt" style={{ borderColor: "var(--acc)" }}>
           <div className="row between">
             <h2 style={{ margin: 0 }}>Virtual key for {created.name}</h2>
-            <button className="btn small" onClick={() => setCreated(null)}>Done</button>
+            <div className="row">
+              <button className="btn small primary" onClick={() => navigate("/playground", { state: { vkey: created.virtual_key } })}>Try it in the playground</button>
+              <button className="btn small" onClick={() => setCreated(null)}>Done</button>
+            </div>
           </div>
           <div className="banner warn mt">Copy it now. KeyLens stores only a hash, so it can't show this again.</div>
           <h3 className="mt">Virtual key</h3>
@@ -100,7 +115,7 @@ export default function Apps() {
               </thead>
               <tbody>
                 {apps.map((a) => {
-                  const used = a.budget_usd ? Math.min(100, (100 * a.month_list_cost) / a.budget_usd) : null;
+                  const used = a.budget_usd != null ? a.budget_usd === 0 ? 100 : Math.min(100, (100 * a.month_list_cost) / a.budget_usd) : null;
                   return (
                     <tr key={a.id}>
                       <td><b>{a.name}</b><div className="pill" style={{ marginTop: 3 }}>{a.kind}</div></td>
@@ -120,11 +135,11 @@ export default function Apps() {
                       <td>{ago(a.stats.last_used)}</td>
                       <td>
                         <div className="row" style={{ gap: 6, flexWrap: "nowrap" }}>
-                          <button className={`btn small ${a.enabled ? "" : "primary"}`} onClick={() => patch(`/api/apps/${a.id}`, { enabled: !a.enabled }).then(load)}>
+                          <button className={`btn small ${a.enabled ? "" : "primary"}`} onClick={() => safe(() => patch(`/api/apps/${a.id}`, { enabled: !a.enabled }))}>
                             {a.enabled ? "Pause" : "Resume"}
                           </button>
                           <button className="btn small" onClick={() => rotate(a)}>Rotate</button>
-                          <button className="btn small danger" onClick={() => confirm(`Delete ${a.name}?`) && del(`/api/apps/${a.id}`).then(load)}>Delete</button>
+                          <button className="btn small danger" onClick={() => confirm(`Delete ${a.name}?`) && safe(() => del(`/api/apps/${a.id}`))}>Delete</button>
                         </div>
                       </td>
                     </tr>
