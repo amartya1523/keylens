@@ -50,11 +50,12 @@ def classify(headers: dict) -> tuple[str, str]:
     lang = h.get("x-stainless-lang", "")
     os_name = h.get("x-stainless-os", "")
 
-    if h.get("sec-fetch-mode") or runtime.startswith("browser") or (
-        h.get("origin") and ua.startswith("Mozilla/")
+    # Node's built-in fetch (undici) also sends sec-fetch-mode, so require a browser UA too.
+    if runtime.startswith("browser") or (
+        ua.startswith("Mozilla/") and (h.get("sec-fetch-mode") or h.get("origin"))
     ):
         browser = _browser_name(h.get("sec-ch-ua", ""), ua)
-        where = h.get("origin") or h.get("referer") or "unknown origin"
+        where = _site(h.get("origin") or h.get("referer")) or "unknown origin"
         via = " via SDK" if lang else ""
         return "browser", f"{browser}{via} · {where}"
 
@@ -76,6 +77,14 @@ def classify(headers: dict) -> tuple[str, str]:
         return "script", lib
 
     return "unknown", ua[:60] or "no user-agent"
+
+
+def _site(url: str | None) -> str | None:
+    """Scheme and host only, so no page paths or query strings are stored."""
+    if not url:
+        return None
+    m = re.match(r"^([a-z][a-z0-9+.-]*://[^/?#]+)", url.strip(), re.I)
+    return m.group(1)[:120] if m else url[:60]
 
 
 def _browser_name(sec_ch_ua: str, ua: str) -> str:
