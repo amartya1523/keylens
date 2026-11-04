@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart,
-  ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Layer, Legend, Line, LineChart, Pie, PieChart,
+  Rectangle, ResponsiveContainer, Sankey, Tooltip, XAxis, YAxis,
 } from "recharts";
 import { api } from "../api";
 import { Card, COLORS, Empty, HeadroomBar, InsightCard, Kpi, Seg } from "../components/ui";
-import { REGION, SOURCE_LABEL, clock, compact, ms, num, pct, usd } from "../format";
+import { REGION, SOURCE_LABEL, clock, compact, ms, num, pct, usd, usdAxis } from "../format";
 
 type Range = "1h" | "24h" | "7d" | "30d";
 
@@ -14,41 +14,38 @@ export default function Overview() {
   const [range, setRange] = useState<Range>("24h");
   const [keyId, setKeyId] = useState<string>("");
   const [data, setData] = useState<any>(null);
-  const [keys, setKeys] = useState<any[]>([]);
+  const [keys, setKeys] = useState<any[] | null>(null);
+  const [apps, setApps] = useState<any[]>([]);
   const [insights, setInsights] = useState<any[]>([]);
   const [where, setWhere] = useState<any[]>([]);
+  const [error, setError] = useState("");
 
-  const load = () => {
-    const q = `range=${range}${keyId ? `&key_id=${keyId}` : ""}`;
-    api(`/api/overview?${q}`).then(setData);
-    api(`/api/where?${q}`).then(setWhere);
-    api("/api/insights").then(setInsights);
-  };
-  useEffect(() => { api("/api/keys").then(setKeys); }, []);
   useEffect(() => {
+    let alive = true;
+    const q = `range=${range}${keyId ? `&key_id=${keyId}` : ""}`;
+    const load = () =>
+      Promise.all([api(`/api/overview?${q}`), api(`/api/where?${q}`), api("/api/insights"), api("/api/keys"), api("/api/apps")])
+        .then(([o, w, i, ks, as]) => {
+          if (!alive) return; // a newer range/key selection is already loading
+          setData(o); setWhere(w); setInsights(i); setKeys(ks); setApps(as); setError("");
+        })
+        .catch((e) => alive && setError(e.message));
     load();
     const t = setInterval(load, 15000);
-    return () => clearInterval(t);
+    return () => { alive = false; clearInterval(t); };
   }, [range, keyId]);
 
-  if (!data) return null;
+  if (error && !data) return <Card><Empty icon="!" title="Could not load the dashboard">{error}. Is the backend running on port 8000?</Empty></Card>;
+  if (!data || !keys) return <div className="sub">Loading…</div>;
   const k = data.kpis;
   const tick = (t: number) => clock(t, data.bucket_s);
   const tooltipLabel = (t: any) => clock(Number(t), data.bucket_s);
-
-  if (!keys.length)
-    return (
-      <>
-        <h1>Overview</h1>
-        <Card>
-          <Empty icon="⚿" title="Add your first API key">
-            <p>Paste a Groq, xAI, OpenAI, Anthropic or OpenRouter key. KeyLens detects the provider and checks it for free.</p>
-            <Link className="btn primary" to="/keys">Add a key</Link>
-          </Empty>
-        </Card>
-      </>
-    );
-
+  const steps = [
+    { done: keys.length > 0, title: "Add a provider key", body: "Paste a Groq, xAI, OpenAI, Anthropic or OpenRouter key.", to: "/keys" },
+    { done: apps.length > 0, title: "Create an app", body: "Each app gets its own virtual key and base URL.", to: "/apps" },
+    { done: k.requests > 0 || keys.some((x) => x.stats.n > 0), title: "Send a request", body: "Use the snippet, the demo script, or the browser playground.", to: "/playground" },
+  ];
+  const onboarding = steps.some((x) => !x.done);
   const delta = k.requests_prev ? Math.round(((k.requests - k.requests_prev) / k.requests_prev) * 100) : null;
 
   return (
@@ -67,13 +64,36 @@ export default function Overview() {
         </div>
       </div>
 
-      <div className="grid g6">
+      {onboarding && (
+        <Card title="Get started" className="" right={<span className="sub" style={{ margin: 0 }}>{steps.filter((x) => x.done).length} of 3 done</span>}>
+          <div className="steps">
+            {steps.map((st, i) => (
+              <Link key={st.title} to={st.to} className={`step${st.done ? " done" : ""}`} style={{ color: "var(--ink)" }}>
+                <div style={{ fontWeight: 600 }}><span className="n">{st.done ? "✓" : i + 1}</span>{st.title}</div>
+                <div style={{ color: "var(--mute)", fontSize: 12.5, marginTop: 4 }}>{st.body}</div>
+              </Link>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      <div className={`grid g6${onboarding ? " mt" : ""}`}>
         <Kpi label="Requests" value={num(k.requests)} hint={delta == null ? `${k.apps} apps · ${k.sources} source types` : `${delta >= 0 ? "▲" : "▼"} ${Math.abs(delta)}% vs previous`} />
         <Kpi label="Tokens" value={compact(k.tokens_in + k.tokens_out)} hint={`${compact(k.tokens_in)} in · ${compact(k.tokens_out)} out · ${compact(k.tokens_reasoning)} reasoning`} />
-        <Kpi label="You paid" value={usd(k.actual_cost)} hint={<>at list price: <b>{usd(k.list_cost)}</b></>} />
+        {k.list_cost > k.actual_cost ? (
+          <Kpi good label="Free tier saved you" value={usd(k.list_cost - k.actual_cost)} hint={<>you paid {usd(k.actual_cost)}</>}
+            info="List price = what this traffic costs at the provider's public per-token rate (LiteLLM price list). On a free tier you pay $0." />
+        ) : (
+          <Kpi label="You paid" value={usd(k.actual_cost)} hint={<>at list price: <b>{usd(k.list_cost)}</b></>}
+            info="Cost computed from token counts and the provider's public per-token price." />
+        )}
         <Kpi label="Latency p50" value={ms(k.latency_p50)} hint={`p95 ${ms(k.latency_p95)} · errors ${pct(k.error_rate * 100, 1)}`} />
-        <Kpi label="Daily quota left" value={k.headroom_pct == null ? "–" : pct(k.headroom_pct, 1)} hint={k.headroom_pct == null ? "run a probe on the Keys page" : <HeadroomBar pct={k.headroom_pct} />} />
-        <Kpi label="Ghost requests (24h)" value={num(k.ghost_requests)} alert={k.ghost_requests > 0} hint={k.ghost_requests > 0 ? "used outside KeyLens" : "nothing outside KeyLens"} />
+        <Kpi label="Tightest daily quota" value={k.headroom_pct == null ? "–" : `${pct(k.headroom_pct, 1)} left`}
+          hint={k.headroom_pct == null ? "run a probe on the Keys page" : <HeadroomBar pct={k.headroom_pct} />}
+          info="Lowest 'requests left today' across your keys and models, read from the provider's rate-limit headers." />
+        <Kpi label="Coverage (24h)" value={k.coverage_pct == null ? "–" : pct(k.coverage_pct, 0)} alert={k.ghost_requests > 0}
+          hint={k.ghost_requests > 0 ? `~${num(k.ghost_requests)} requests went around KeyLens` : "every counted request went through KeyLens"}
+          info="Share of the provider-counted requests that KeyLens actually saw. Ghost requests = counted by the provider's rate-limit bucket but never proxied: another app, another key in the org, or a leak." />
       </div>
 
       {insights.length > 0 && (
@@ -100,7 +120,7 @@ export default function Overview() {
                   <Tooltip labelFormatter={tooltipLabel} />
                   <Legend iconSize={9} wrapperStyle={{ fontSize: 12 }} />
                   {data.app_names.map((n: string, i: number) => (
-                    <Area key={n} type="monotone" dataKey={n} stackId="1" stroke={COLORS[i % 8]} fill={COLORS[i % 8]} fillOpacity={0.35} />
+                    <Area key={n} type="monotone" name={n} dataKey={(row: any) => row[n] ?? 0} stackId="1" stroke={COLORS[i % 8]} fill={COLORS[i % 8]} fillOpacity={0.35} />
                   ))}
                 </AreaChart>
               </ResponsiveContainer>
@@ -127,7 +147,7 @@ export default function Overview() {
                 <LineChart data={data.series}>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
                   <XAxis dataKey="t" tickFormatter={tick} fontSize={11} stroke="var(--mute)" />
-                  <YAxis fontSize={11} stroke="var(--mute)" width={52} tickFormatter={(v) => usd(v)} />
+                  <YAxis fontSize={11} stroke="var(--mute)" width={52} tickFormatter={usdAxis} />
                   <Tooltip labelFormatter={tooltipLabel} formatter={(v: any) => usd(Number(v))} />
                   <Legend iconSize={9} wrapperStyle={{ fontSize: 12 }} />
                   <Line type="monotone" dataKey="list_cost" name="list price" stroke={COLORS[1]} dot={false} strokeWidth={2} />
@@ -195,14 +215,15 @@ export default function Overview() {
             </Card>
           </div>
 
-          <Card title="Where is the key used? (key → app → client → IP)" className="mt">
-            <WhereFlow rows={where} />
+          <Card title="Where is the key used? key → app → client → caller IP" className="mt"
+            right={<span className="sub" style={{ margin: 0 }}>width = requests · red = counted by the provider but never seen by KeyLens</span>}>
+            <WhereSankey rows={where} ghost={k.ghost_requests} />
           </Card>
 
           <div className="grid g3 mt">
             <Breakdown title="Top clients" rows={data.by_source_detail} />
             <Breakdown title="Caller IPs" rows={data.by_ip} />
-            <Breakdown title="Provider region" rows={data.by_region.map((r: any) => ({ ...r, name: r.name === "unknown" ? r.name : `${r.name} · ${REGION[r.name] ?? "?"}` }))} />
+            <Breakdown title="Provider region" rows={data.by_region.map((r: any) => ({ ...r, name: r.name === "unknown" ? r.name : REGION[r.name] ? `${r.name} · ${REGION[r.name]}` : r.name }))} />
           </div>
         </>
       )}
@@ -228,26 +249,54 @@ function Breakdown({ title, rows }: { title: string; rows: any[] }) {
   );
 }
 
-function WhereFlow({ rows }: { rows: any[] }) {
+const COL_COLORS = ["#4f46e5", "#0d9488", "#f97316", "#7c3aed"];
+
+function WhereSankey({ rows, ghost }: { rows: any[]; ghost: number }) {
   if (!rows.length) return <p className="sub">No traffic yet.</p>;
-  const sum = (field: string) => {
-    const m = new Map<string, number>();
-    rows.forEach((r) => m.set(r[field], (m.get(r[field]) ?? 0) + r.requests));
-    return [...m.entries()].sort((a, b) => b[1] - a[1]);
+  const cols = ["key", "app", "source", "ip"];
+  const nodes: { name: string; col: number; ghost?: boolean }[] = [];
+  const index = new Map<string, number>();
+  const node = (col: number, name: string, isGhost = false) => {
+    const id = `${col}:${name}`;
+    if (!index.has(id)) { index.set(id, nodes.length); nodes.push({ name, col, ghost: isGhost }); }
+    return index.get(id)!;
   };
-  const cols: [string, string][] = [["key", "Key"], ["app", "App"], ["source", "Client"], ["ip", "Caller IP"]];
+  const links = new Map<string, number>();
+  const link = (a: number, b: number, v: number) => links.set(`${a}>${b}`, (links.get(`${a}>${b}`) ?? 0) + v);
+  for (const r of rows) {
+    const ids = cols.map((c, i) => node(i, String(r[c] ?? "unknown")));
+    for (let i = 0; i < ids.length - 1; i++) link(ids[i], ids[i + 1], r.requests);
+  }
+  if (ghost > 0) {
+    const keyNode = node(0, rows[0].key);
+    link(keyNode, node(1, "Outside KeyLens", true), ghost);
+  }
+  const data = {
+    nodes,
+    links: [...links.entries()].map(([k, value]) => { const [source, target] = k.split(">").map(Number); return { source, target, value }; }),
+  };
+  const height = Math.max(240, Math.min(520, nodes.length * 30));
   return (
-    <div className="flow">
-      {cols.map(([field, label]) => (
-        <div className="col" key={field}>
-          <h3>{label}</h3>
-          {sum(field).map(([name, n]) => (
-            <div className="node" key={name}>
-              {name} <b style={{ float: "right" }}>{n}</b>
-            </div>
-          ))}
-        </div>
-      ))}
-    </div>
+    <ResponsiveContainer width="100%" height={height}>
+      <Sankey data={data} nodePadding={18} nodeWidth={10} margin={{ left: 10, right: 190, top: 10, bottom: 10 }}
+        link={{ stroke: "#94a3b8", strokeOpacity: 0.35 }} node={<SankeyNode nodes={nodes} />}>
+        <Tooltip formatter={(v: any) => `${num(Number(v))} requests`} />
+      </Sankey>
+    </ResponsiveContainer>
+  );
+}
+
+function SankeyNode({ x, y, width, height, index, payload, nodes }: any) {
+  const meta = nodes[index] ?? {};
+  const fill = meta.ghost ? "#dc2626" : COL_COLORS[meta.col] ?? "#4f46e5";
+  const label = String(payload.name).length > 34 ? String(payload.name).slice(0, 33) + "…" : payload.name;
+  return (
+    <Layer>
+      <Rectangle x={x} y={y} width={width} height={height} fill={fill} fillOpacity={0.9} />
+      <text x={x + width + 6} y={y + height / 2} dy="0.35em" fontSize={11.5} fill={meta.ghost ? "#dc2626" : "currentColor"}
+        fontWeight={meta.ghost ? 700 : 500}>
+        {label} <tspan fill="#94a3b8">{num(payload.value)}</tspan>
+      </text>
+    </Layer>
   );
 }
