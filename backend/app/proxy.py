@@ -16,6 +16,7 @@ import time
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
+from starlette.background import BackgroundTask
 
 from . import pricing
 from .classify import classify
@@ -327,11 +328,12 @@ async def proxy(path: str, request: Request):
         if path.rstrip("/").endswith("models"):
             return Response(content, status_code=upstream.status_code, headers=out_headers,
                             media_type=content_type or None)
-        _safe_record(rec, meta, usage, upstream.headers, req_headers)
         if rec["budget_usd"]:
             out_headers["x-keylens-budget-used"] = f"{100 * spent / rec['budget_usd']:.0f}%"
+        # write the metadata after the response is sent, so logging adds no latency
         return Response(content, status_code=upstream.status_code, headers=out_headers,
-                        media_type=content_type or None)
+                        media_type=content_type or None,
+                        background=BackgroundTask(_safe_record, rec, meta, usage, upstream.headers, req_headers))
 
     async def relay():
         usage: dict = {}

@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import os
 import secrets
+from functools import lru_cache
 
 from cryptography.fernet import Fernet
 
@@ -50,6 +51,7 @@ def hint(token: str) -> str:
 
 # ---------- provider key encryption ----------
 
+@lru_cache(maxsize=1)
 def _fernet() -> Fernet:
     key = os.environ.get("KEYLENS_FERNET_KEY", "").strip()
     if not key:
