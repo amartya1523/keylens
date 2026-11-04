@@ -18,16 +18,24 @@ export default function Requests() {
     api(`/api/events?${q}`).then(setEvents);
   };
   useEffect(() => { api("/api/apps").then(setApps); }, []);
+  useEffect(() => {
+    const esc = (e: KeyboardEvent) => e.key === "Escape" && setDetail(null);
+    window.addEventListener("keydown", esc);
+    return () => window.removeEventListener("keydown", esc);
+  }, []);
   useEffect(() => { load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, [filter]);
 
   const exportCsv = async () => {
     const res = await fetch(`${API_BASE}/api/export.csv?range=30d`, { headers: { Authorization: `Bearer ${getToken()}` } });
+    if (!res.ok) return alert(`Export failed: HTTP ${res.status}`);
     const url = URL.createObjectURL(await res.blob());
     const a = document.createElement("a");
     a.href = url;
     a.download = "keylens-events.csv";
+    document.body.append(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   return (
@@ -53,7 +61,7 @@ export default function Requests() {
         </label>
       </div>
       <Card>
-        {!events.length ? <Empty icon="≡" title="No requests yet" /> : (
+        {!events.length ? <Empty icon="≡" title={filter.app_id || filter.source || filter.errors_only ? "No requests match these filters" : "No requests yet"} /> : (
           <div className="scroll">
             <table>
               <thead>
