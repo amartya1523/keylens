@@ -10,6 +10,7 @@ KeyLens also simulates the same bucket using only the requests it proxied.
 If the provider's deficit is bigger than ours, the difference was spent
 somewhere KeyLens did not see: another app, another key in the org, or a leak.
 """
+import math
 import re
 import time
 
@@ -77,43 +78,42 @@ def ghost_analysis(snapshots: list[dict], own_request_ts: list[float],
     if not snaps:
         return {"ghost_requests": 0, "points": [], "confidence": "none"}
 
+    # Groq refills the daily bucket one whole request at a time (every 1/r seconds),
+    # and reports deficits as whole requests. So between two readings at most
+    # floor(r * dt) requests can have refilled for sure. Re-anchoring on every reading
+    # keeps the estimate exact for close readings and a lower bound otherwise.
     own = sorted(own_request_ts)
-    sim = 0.0          # our simulated deficit (requests not yet refilled)
-    last_t = None
     ghost_total = 0
     points = []
     i = 0
-    for n, s in enumerate(snaps):
+    anchor_t = anchor_d = None
+    for s in snaps:
         t, L = s["ts"], s["limit_requests"]
         r = L / window_s
-        while i < len(own) and own[i] <= t:
-            if last_t is not None:
-                sim = max(0.0, sim - r * (own[i] - last_t))
-            sim += 1
-            last_t = own[i]
-            i += 1
-        if last_t is not None:
-            sim = max(0.0, sim - r * (t - last_t))
-        last_t = t
-
-        # reset * r is precise to a fraction of a request; L - remaining is rounded up
         if s.get("reset_requests_s") is not None:
             observed = s["reset_requests_s"] * r
         elif s.get("remaining_requests") is not None:
             observed = float(L - s["remaining_requests"])
         else:
             continue
-
-        gap = observed - sim
-        saw = sim
-        if n == 0:
-            sim = observed            # first reading: anchor, traffic before it is unknown
-        elif gap > 0.6:
-            ghost_total += round(gap)
-            sim = observed            # absorb so the same requests are not counted twice
-        points.append({"ts": t, "provider_used": round(observed, 2),
-                       "keylens_saw": round(saw, 2),
+        own_since = 0
+        while i < len(own) and own[i] <= t:
+            if anchor_t is None or own[i] > anchor_t:
+                own_since += 1
+            i += 1
+        if anchor_t is None:
+            expected = observed      # first reading: anchor, earlier traffic is unknown
+        else:
+            refilled = math.floor(r * (t - anchor_t))
+            if refilled >= 1:
+                refilled -= 1        # slack for refill phase and clock skew after idle gaps
+            expected = max(0.0, anchor_d - refilled) + own_since
+            gap = observed - expected
+            if gap >= 1:
+                ghost_total += math.floor(gap + 1e-9)
+        points.append({"ts": t, "provider_used": round(observed, 2), "keylens_saw": round(expected, 2),
                        "limit": L, "remaining": s.get("remaining_requests")})
+        anchor_t, anchor_d = t, observed
 
     return {
         "ghost_requests": int(ghost_total),
