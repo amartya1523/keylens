@@ -55,8 +55,9 @@ def _fernet() -> Fernet:
     if not key:
         path = DATA_DIR / "secret.key"
         if not path.exists():
-            path.write_bytes(Fernet.generate_key())
-            path.chmod(0o600)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(Fernet.generate_key())
         key = path.read_text().strip()
     return Fernet(key.encode())
 

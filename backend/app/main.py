@@ -2,20 +2,24 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 from . import api, proxy
-from .config import CORS_ORIGINS
-from .db import init_db
+from .config import ALLOWED_HOSTS, CORS_ORIGINS, RAW_RETENTION_DAYS
+from .db import init_db, purge
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    purge(RAW_RETENTION_DAYS)
     yield
     await proxy.close_client()
 
 
 app = FastAPI(title="KeyLens", version="0.1.0", lifespan=lifespan)
+# Blocks DNS-rebinding: a web page can't reach the local API under its own hostname.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,

@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 -- Provider keys the user pasted. The key itself is Fernet-encrypted.
 CREATE TABLE IF NOT EXISTS provider_keys (
-    id            INTEGER PRIMARY KEY,
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     provider      TEXT NOT NULL,
     label         TEXT NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS provider_keys (
 
 -- One virtual key per app. Apps call the proxy with it; KeyLens swaps in the real key.
 CREATE TABLE IF NOT EXISTS apps (
-    id              INTEGER PRIMARY KEY,
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     key_id          INTEGER NOT NULL REFERENCES provider_keys(id) ON DELETE CASCADE,
     name            TEXT NOT NULL,
@@ -130,6 +130,15 @@ def tx():
 def init_db() -> None:
     with tx() as conn:
         conn.executescript(SCHEMA)
+
+
+def purge(raw_days: int) -> None:
+    """Retention: drop per-request rows and expired sessions after raw_days."""
+    import time
+    with tx() as conn:
+        conn.execute("DELETE FROM events WHERE ts < ?", (time.time() - raw_days * 86400,))
+        conn.execute("DELETE FROM ratelimit_snapshots WHERE ts < ?", (time.time() - raw_days * 86400,))
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (time.time(),))
 
 
 def rows(cur) -> list[dict]:

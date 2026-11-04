@@ -34,3 +34,6 @@ CORS_ORIGINS = [
 ]
 
 SESSION_DAYS = 14
+RAW_RETENTION_DAYS = int(os.environ.get("KEYLENS_RAW_RETENTION_DAYS", "30"))
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get(
+    "KEYLENS_ALLOWED_HOSTS", "localhost,127.0.0.1,::1,testserver,test").split(",") if h.strip()]
