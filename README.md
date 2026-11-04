@@ -8,6 +8,10 @@ of your rate limit is left, and whether someone used the key **outside** KeyLens
 
 Metadata only. Prompt and response text are never stored, and a test proves it.
 
+![Overview](docs/screenshots/overview.jpg)
+
+**Build write-up (4 pages, with design, results and limits):** [`docs/KeyLens_Build_Writeup.pdf`](docs/KeyLens_Build_Writeup.pdf)
+
 KeyLens is the working v1 slice of a larger design (enterprise AI usage visibility:
 see `docs/`). It answers one question end to end: *"I have an API key. Where is it
 being used, and what is it costing me?"*
@@ -32,9 +36,11 @@ Then it goes one step further: providers return rate-limit counters on every
 response. Groq's daily request limit is a continuously refilling bucket
 (`reset_seconds × limit / 86400` = requests spent). KeyLens simulates the same
 bucket using only the traffic it proxied. **If the provider's bucket is emptier
-than KeyLens's, someone used the key somewhere else.** In a live test, 4 requests
-sent straight to Groq showed up as "~3 requests did not go through KeyLens" (a
-deliberate lower bound).
+than KeyLens's, someone used the key somewhere else.** In a live test, 9 requests
+sent straight to Groq were reported as exactly 9 requests "outside KeyLens", with
+0 false ghosts on the other model. Simulated buckets confirm it never over-counts.
+
+![Where the key is used](docs/screenshots/where-used.jpg)
 
 ## What it does
 
@@ -97,11 +103,24 @@ cd backend
 .venv/bin/python scripts/demo_traffic.py --vkey kl_live_A --vkey kl_live_B --rounds 2 --ghost 4
 ```
 
-Run the privacy test:
+Run the tests (no network needed):
 
 ```bash
-cd backend && .venv/bin/python tests/test_privacy.py
+cd backend
+.venv/bin/python tests/test_privacy.py      # canary prompt/reply never reach the database
+.venv/bin/python tests/test_proxy_rules.py  # endpoint allowlist, kill switch, budget, Host check
+.venv/bin/python tests/test_ghost.py        # ghost inference never over-counts
 ```
+
+## Measured on a live Groq key
+
+| | |
+|---|---|
+| Requests through KeyLens | 46, from 5 client types (OpenAI SDK, Groq SDK, python-requests, curl, Chrome) across 3 apps |
+| Outside requests detected | 9 sent around KeyLens → 9 reported, 0 false |
+| Hidden reasoning | 76% of output tokens on `gpt-oss` |
+| Latency | median ~580 ms waiting in Groq's queue vs ~50 ms compute |
+| Overhead added by KeyLens | ~48 ms median (network only, n = 6) |
 
 ## How it's built
 
@@ -129,6 +148,8 @@ docs/      research notes and the design write-up
 - Source labels come from headers; any client can fake a User-Agent.
 - Cheaper-model suggestions are hypotheses: KeyLens never sees content, so it
   can't judge quality. Test before switching.
+- Ghost inference needs a long request window (Groq's per-day limit) and sees
+  outside calls only within the refill time (~86 s per request at 1,000/day).
 - Only Groq was tested live. xAI, OpenAI, Anthropic and OpenRouter use the same
   code paths but were not called with real keys.
 
