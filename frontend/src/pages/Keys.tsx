@@ -168,7 +168,8 @@ function KeyCard({ k, open, toggle, reload }: { k: any; open: boolean; toggle: (
                     <ResponsiveContainer width="100%" height={150}>
                       <AreaChart data={g.points}>
                         <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" />
-                        <XAxis dataKey="ts" tickFormatter={(t) => clock(t, 300)} fontSize={10} stroke="var(--mute)" />
+                        <XAxis dataKey="ts" type="number" scale="time" domain={["dataMin", "dataMax"]} tickCount={5}
+                          tickFormatter={(t) => clock(t, 300)} fontSize={10} stroke="var(--mute)" />
                         <YAxis fontSize={10} stroke="var(--mute)" width={30} />
                         <Tooltip labelFormatter={(t) => clock(Number(t), 300)} />
                         <Legend iconSize={8} wrapperStyle={{ fontSize: 11 }} />
