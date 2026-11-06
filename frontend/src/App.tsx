@@ -70,6 +70,7 @@ export default function App() {
           ))}
         </nav>
         <div className="foot">
+          <ProxyStatus />
           <div>{user.name}</div>
           <div>{user.email}</div>
           <button className="btn small mt" onClick={logout}>Sign out</button>
@@ -88,6 +89,22 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </main>
+    </div>
+  );
+}
+
+function ProxyStatus() {
+  const [up, setUp] = useState<boolean | null>(null);
+  useEffect(() => {
+    const ping = () => api("/health").then(() => setUp(true)).catch(() => setUp(false));
+    ping();
+    const t = setInterval(ping, 15000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div className="proxy">
+      <span className={`dot ${up ? "ok" : "bad"}`} />
+      {up === null ? "Checking proxy…" : up ? "Proxy online · /v1" : "Proxy offline"}
     </div>
   );
 }

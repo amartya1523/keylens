@@ -5,13 +5,13 @@
   --mute: #64748b;
   --line: #e2e8f0;
   --soft: #f1f5f9;
-  --acc: #4f46e5;
-  --acc-soft: #eef2ff;
+  --acc: #0f766e;
+  --acc-soft: #e6f6f4;
   --ok: #16a34a;
   --warn: #d97706;
   --bad: #dc2626;
   --info: #0284c7;
-  --c1: #4f46e5;
+  --c1: #0f766e;
   --c2: #f97316;
   --c3: #0d9488;
   --c4: #db2777;
@@ -32,8 +32,8 @@
     --mute: #94a3b8;
     --line: #1f2a44;
     --soft: #16213a;
-    --acc: #818cf8;
-    --acc-soft: #1e1b4b;
+    --acc: #2dd4bf;
+    --acc-soft: #0f2f2e;
   }
 }
 * { box-sizing: border-box; }
@@ -155,3 +155,10 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .step .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--acc); color: #fff; font-size: 12px; font-weight: 700; margin-right: 6px; }
 .step.done .n { background: var(--ok); }
 @media (max-width: 760px) { .steps { grid-template-columns: 1fr; } }
+
+.proxy { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--mute); margin-bottom: 10px; }
+.proxy .dot { width: 7px; height: 7px; }
+.flow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+.flow .step { background: var(--panel); }
+.flow .step b { display: block; margin-bottom: 2px; }
+.flow .step span.t { color: var(--mute); font-size: 12.5px; }
