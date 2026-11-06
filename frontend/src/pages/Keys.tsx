@@ -45,6 +45,12 @@ export default function Keys() {
       <h1>API keys</h1>
       <div className="sub">Paste a provider key. It is encrypted at rest and never shown again; KeyLens only displays a masked version.</div>
 
+      <div className="flow">
+        <div className="step"><span className="n">1</span><b>Paste the real key</b><span className="t">Provider detected from the prefix, checked with a free models call, then encrypted.</span></div>
+        <div className="step"><span className="n">2</span><b>Create an app</b><span className="t">Each app gets its own kl_live_ virtual key. The real key never leaves KeyLens.</span></div>
+        <div className="step"><span className="n">3</span><b>Change the base URL</b><span className="t">Calls go app → KeyLens → provider. Usage and limits are read from every reply.</span></div>
+      </div>
+
       <Card>
         <form onSubmit={add} className="grid" style={{ gridTemplateColumns: "2fr 1fr auto", alignItems: "end" }}>
           <label className="field" style={{ margin: 0 }}>Provider API key
