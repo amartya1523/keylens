@@ -121,7 +121,7 @@ function KeyCard({ k, open, toggle, reload }: { k: any; open: boolean; toggle: (
         <Stat label="Last used via KeyLens" value={ago(k.stats.last_used)} />
       </div>
       <p className="sub" style={{ marginTop: 6 }}>
-        These numbers count only requests sent through this account's virtual keys, from the moment the key was added.
+        These numbers count only requests sent through this account's virtual keys, from the moment the key was added.{" "}
         {k.provider_name}'s own console counts every call made with the key, from any client, so it will usually be higher.
         {k.stats.n === 0 && " To see traffic here, create an app on Apps & virtual keys and point it at KeyLens."}
       </p>
