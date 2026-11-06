@@ -10,6 +10,8 @@ Metadata only. Prompt and response text are never stored, and a test proves it.
 
 ![Overview](docs/screenshots/overview.jpg)
 
+**Walkthrough video (3 min, real Groq traffic):** [`docs/KeyLens_Walkthrough.mp4`](docs/KeyLens_Walkthrough.mp4)
+
 **Build write-up (4 pages, with design, results and limits):** [`docs/KeyLens_Build_Writeup.pdf`](docs/KeyLens_Build_Writeup.pdf)
 
 KeyLens is the working v1 slice of a larger design (enterprise AI usage visibility:
@@ -41,6 +43,25 @@ sent straight to Groq were reported as exactly 9 requests "outside KeyLens", wit
 0 false ghosts on the other model. Simulated buckets confirm it never over-counts.
 
 ![Where the key is used](docs/screenshots/where-used.jpg)
+
+## How the data is fetched
+
+The keys page shows the same three steps:
+
+![Keys page with the three steps](docs/screenshots/keys-flow.jpg)
+
+1. **Paste the real key.** The provider is detected from the prefix, and the key is
+   checked with a free models call, then encrypted. From then on it is only shown masked.
+2. **Create an app.** It gets its own `kl_live_…` virtual key. The real key never
+   leaves KeyLens.
+3. **Change the app's base URL** to KeyLens. On every call KeyLens checks the
+   endpoint, the pause switch and the budget, then swaps in the real key and
+   streams the reply back untouched. Once the reply has gone, it reads the `usage`
+   block and the rate-limit headers and saves one metadata row.
+
+The numbers on a key card count only traffic sent through that account's virtual
+keys. The provider's own console counts every call made with the key, so it is
+usually higher. That difference is what the outside-usage check estimates.
 
 ## What it does
 
@@ -83,6 +104,10 @@ npm install
 npm run dev                     # http://localhost:5173
 ```
 
+If port 5173 is taken, run `npx vite --port 5174` and add that origin to
+`KEYLENS_CORS_ORIGINS` in `backend/.env`. The sidebar shows "Proxy online" once
+the frontend can reach the backend.
+
 Then: create an account → paste a key on **API keys** → create an app on
 **Apps** → use its virtual key:
 
@@ -117,7 +142,7 @@ cd backend
 | | |
 |---|---|
 | Requests through KeyLens | 46, from 5 client types (OpenAI SDK, Groq SDK, python-requests, curl, Chrome) across 3 apps |
-| Outside requests detected | 9 sent around KeyLens → 9 reported, 0 false |
+| Outside requests detected | 9 sent around KeyLens → 9 reported, 0 false; in the recorded walkthrough 3 → 3 |
 | Hidden reasoning | 76% of output tokens on `gpt-oss` |
 | Latency | median ~580 ms waiting in Groq's queue vs ~50 ms compute |
 | Overhead added by KeyLens | ~48 ms median (network only, n = 6) |
@@ -136,7 +161,7 @@ backend/   FastAPI + httpx + SQLite (no ORM)
   app/insights.py    rule-based insight cards
   app/scanner.py     local key scanner with git checks
   app/api.py         dashboard API
-  tests/             privacy canary test
+  tests/             privacy canary, proxy rules, ghost math
 docs/      research notes and the design write-up
 ```
 
